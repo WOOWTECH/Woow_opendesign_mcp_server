@@ -6,17 +6,10 @@ Connects to OD daemon at OD_API_BASE (default: http://open-design-svc:7457).
 """
 import json
 import os
-import re
-import time
-from typing import Optional
+import uuid
 
 import httpx
 from mcp.server.fastmcp import FastMCP
-
-# Pattern to extract project UUID from file paths like /app/.od/projects/{uuid}/file
-_PROJECT_PATH_RE = re.compile(
-    r"/\.od/projects/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
-)
 
 OD_API_BASE = os.environ.get("OD_API_BASE", "http://open-design-svc:7457")
 
@@ -48,28 +41,15 @@ def _api_post(path: str, data: dict | None = None) -> dict:
     return resp.json()
 
 
-def _get_project_ids() -> set[str]:
-    """Get the set of current project IDs from the daemon."""
-    try:
-        data = _api_get("/api/projects")
-        return {p["id"] for p in data.get("projects", [])}
-    except Exception:
-        return set()
-
-
 def _api_post_sse(
     path: str,
     data: dict | None = None,
-    project_ids_before: set[str] | None = None,
 ) -> dict:
     """POST request that consumes an SSE (event-stream) response.
 
     The OD daemon /api/chat returns Server-Sent Events. We stream through
     all events, collecting agent text output, and return a structured result
     once the stream ends.
-
-    If project_ids_before is provided and the SSE stream returns projectId=null,
-    we diff the project list to discover the newly created project.
     """
     client = httpx.Client(base_url=OD_API_BASE, timeout=httpx.Timeout(CHAT_TIMEOUT, connect=10.0))
     try:
@@ -81,7 +61,6 @@ def _api_post_sse(
             status = "unknown"
             agent_text = []
             errors = []
-            discovered_project_ids = set()
 
             for line in resp.iter_lines():
                 # SSE data lines: "data: {...}" or "data:{...}"
@@ -99,22 +78,6 @@ def _api_post_sse(
                         run_id = payload["runId"]
                         project_id = payload.get("projectId")
 
-                    # Extract projectId from tool_use file paths
-                    # Agent writes to /app/.od/projects/{uuid}/file
-                    if payload.get("type") == "tool_use":
-                        input_data = payload.get("input", {})
-                        file_path = input_data.get("file_path", "")
-                        m = _PROJECT_PATH_RE.search(file_path)
-                        if m:
-                            discovered_project_ids.add(m.group(1))
-
-                    # Also check tool_result content for project paths
-                    if payload.get("type") == "tool_result":
-                        content = payload.get("content", "")
-                        if isinstance(content, str):
-                            for m in _PROJECT_PATH_RE.finditer(content):
-                                discovered_project_ids.add(m.group(1))
-
                     # Collect agent text deltas
                     if payload.get("type") == "text_delta":
                         agent_text.append(payload.get("delta", ""))
@@ -126,21 +89,6 @@ def _api_post_sse(
                     # Capture final status
                     if "status" in payload and "code" in payload:
                         status = payload["status"]
-
-            # Resolve projectId if the SSE stream didn't report it.
-            # Strategy 1: Use project ID extracted from agent's file writes.
-            if not project_id and discovered_project_ids:
-                project_id = discovered_project_ids.pop()
-
-            # Strategy 2: Diff the project list to find newly created projects.
-            if not project_id and project_ids_before is not None:
-                for attempt in range(3):
-                    current_ids = _get_project_ids()
-                    new_ids = current_ids - project_ids_before
-                    if new_ids:
-                        project_id = new_ids.pop()
-                        break
-                    time.sleep(2)
 
             result = {
                 "runId": run_id,
@@ -235,13 +183,20 @@ def create_project(prompt: str, agent_id: str = "claude") -> dict:
         prompt: The initial design prompt (e.g. 'Create a landing page for a coffee shop')
         agent_id: Agent CLI to use ('claude', 'opencode', 'byok-opencode'). Default: 'claude'
     """
-    # Snapshot project IDs before the call so we can discover the new project
-    # (the daemon creates it during the run but never reports its ID via SSE).
-    ids_before = _get_project_ids()
-    return _api_post_sse("/api/chat", {
+    # Generate a project ID upfront so the daemon creates the project directory
+    # and the agent writes files there. Without this, the agent writes to
+    # /home/opendesign/ and the project is not discoverable.
+    project_id = str(uuid.uuid4())
+    result = _api_post_sse("/api/chat", {
         "message": prompt,
         "agentId": agent_id,
-    }, project_ids_before=ids_before)
+        "projectId": project_id,
+    })
+    # Ensure projectId is always set (the daemon echoes it back in the SSE
+    # start event, but as a safety net we set it here too).
+    if not result.get("projectId"):
+        result["projectId"] = project_id
+    return result
 
 
 @mcp.tool()

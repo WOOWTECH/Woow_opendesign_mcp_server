@@ -16,5 +16,14 @@ uvicorn od_mcp_admin.main:app --host 0.0.0.0 --port "${ADMIN_PORT:-8080}" &
 UVICORN_PID=$!
 echo "[entrypoint] uvicorn started (PID $UVICORN_PID)"
 
-trap "kill $SUPER_PID $UVICORN_PID 2>/dev/null" EXIT TERM INT
-wait $SUPER_PID $UVICORN_PID
+cleanup() {
+    kill $SUPER_PID $UVICORN_PID 2>/dev/null
+    exit 1
+}
+trap cleanup EXIT TERM INT
+
+# Wait for EITHER process to exit — if one dies, kill the other and exit
+# so K8s restarts the container.
+wait -n $SUPER_PID $UVICORN_PID 2>/dev/null
+echo "[entrypoint] a child process exited, shutting down"
+cleanup
