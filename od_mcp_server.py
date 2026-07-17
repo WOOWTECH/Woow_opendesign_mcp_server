@@ -13,6 +13,9 @@ from mcp.server.fastmcp import FastMCP
 
 OD_API_BASE = os.environ.get("OD_API_BASE", "http://open-design-svc:7457")
 
+# Chat operations can take minutes (AI agent generates code)
+CHAT_TIMEOUT = float(os.environ.get("OD_CHAT_TIMEOUT", "300"))
+
 mcp = FastMCP("Open Design MCP Server")
 _client: httpx.Client | None = None
 
@@ -20,7 +23,7 @@ _client: httpx.Client | None = None
 def _get_client() -> httpx.Client:
     global _client
     if _client is None:
-        _client = httpx.Client(base_url=OD_API_BASE, timeout=30.0)
+        _client = httpx.Client(base_url=OD_API_BASE, timeout=60.0)
     return _client
 
 
@@ -36,6 +39,63 @@ def _api_post(path: str, data: dict | None = None) -> dict:
     resp = _get_client().post(path, json=data or {})
     resp.raise_for_status()
     return resp.json()
+
+
+def _api_post_sse(path: str, data: dict | None = None) -> dict:
+    """POST request that consumes an SSE (event-stream) response.
+
+    The OD daemon /api/chat returns Server-Sent Events. We stream through
+    all events, collecting agent text output, and return a structured result
+    once the stream ends.
+    """
+    client = httpx.Client(base_url=OD_API_BASE, timeout=httpx.Timeout(CHAT_TIMEOUT, connect=10.0))
+    try:
+        with client.stream("POST", path, json=data or {}) as resp:
+            resp.raise_for_status()
+
+            run_id = None
+            project_id = None
+            status = "unknown"
+            agent_text = []
+            errors = []
+
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    try:
+                        payload = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Extract run metadata from "start" event
+                    if "runId" in payload:
+                        run_id = payload["runId"]
+                        project_id = payload.get("projectId")
+
+                    # Collect agent text deltas
+                    if payload.get("type") == "text_delta":
+                        agent_text.append(payload.get("delta", ""))
+
+                    # Capture errors
+                    if "error" in payload and isinstance(payload["error"], dict):
+                        errors.append(payload["error"].get("message", str(payload["error"])))
+
+                    # Capture final status
+                    if "status" in payload and "code" in payload:
+                        status = payload["status"]
+
+            result = {
+                "runId": run_id,
+                "projectId": project_id,
+                "status": status,
+            }
+            if agent_text:
+                result["agentResponse"] = "".join(agent_text)
+            if errors:
+                result["errors"] = errors
+                result["status"] = "failed"
+            return result
+    finally:
+        client.close()
 
 
 def _api_delete(path: str) -> dict:
@@ -109,12 +169,15 @@ def get_project(project_id: str) -> dict:
 def create_project(prompt: str, agent_id: str = "claude") -> dict:
     """Create a new design project by sending an initial prompt to an AI agent.
 
+    This is a long-running operation — the AI agent will generate code/design
+    and the call blocks until completion (up to 5 minutes).
+
     Args:
         prompt: The initial design prompt (e.g. 'Create a landing page for a coffee shop')
         agent_id: Agent CLI to use ('claude', 'opencode', 'byok-opencode'). Default: 'claude'
     """
-    return _api_post("/api/chat", {
-        "prompt": prompt,
+    return _api_post_sse("/api/chat", {
+        "message": prompt,
         "agentId": agent_id,
     })
 
@@ -185,13 +248,16 @@ def send_message(
 ) -> dict:
     """Send a follow-up message in an existing project's conversation.
 
+    This is a long-running operation — the AI agent will process the message
+    and the call blocks until completion (up to 5 minutes).
+
     Args:
         project_id: UUID of the project to continue
         prompt: The message to send to the AI agent
         agent_id: Agent CLI to use. Default: 'claude'
     """
-    return _api_post("/api/chat", {
-        "prompt": prompt,
+    return _api_post_sse("/api/chat", {
+        "message": prompt,
         "agentId": agent_id,
         "projectId": project_id,
     })
