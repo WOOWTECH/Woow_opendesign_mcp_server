@@ -1,0 +1,7 @@
+vibe-kanban-mcp
+__pycache__/
+*.pyc
+.env
+node_modules/
+frontend/node_modules/
+__pycache__/
