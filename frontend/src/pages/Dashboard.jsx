@@ -101,7 +101,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatusCard
           title="Daemon Version"
-          value={health?.version || "--"}
+          value={typeof health?.version === "object" ? health.version.version : health?.version || "--"}
           status="gray"
           icon={Cpu}
         />

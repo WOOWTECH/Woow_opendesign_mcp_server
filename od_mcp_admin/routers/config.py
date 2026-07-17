@@ -10,17 +10,61 @@ Endpoints:
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from mcp_admin_core.config import get_config_store
 from mcp_admin_core.process import get_process_manager
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SSRF protection
+# ---------------------------------------------------------------------------
+
+# Allowed URL schemes
+_ALLOWED_SCHEMES = {"http", "https"}
+
+# Blocked hostnames — cloud metadata endpoints
+_BLOCKED_HOSTS = {
+    "169.254.169.254",          # AWS/GCP metadata
+    "metadata.google.internal", # GCP metadata
+    "100.100.100.200",          # Alibaba metadata
+}
+
+
+def _validate_url_ssrf(url: str) -> None:
+    """Reject URLs targeting internal/metadata endpoints (SSRF protection)."""
+    parsed = urlparse(url)
+
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise HTTPException(400, f"URL scheme '{parsed.scheme}' not allowed")
+
+    hostname = parsed.hostname or ""
+
+    # Block metadata endpoints
+    if hostname in _BLOCKED_HOSTS:
+        raise HTTPException(400, "URL targets a blocked metadata endpoint")
+
+    # Block localhost/loopback (except for internal cluster services)
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_loopback:
+            raise HTTPException(400, "URL targets loopback address")
+        if addr.is_link_local:
+            raise HTTPException(400, "URL targets link-local address")
+    except ValueError:
+        pass  # hostname is not an IP — that's fine
+
+    # Allow *.svc.cluster.local and private RFC1918 for K8s internal comms
+    # Block file:// and other exotic schemes (already handled by scheme check)
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -98,6 +142,9 @@ async def test_connection(req: ConnectionTestRequest) -> ConnectionTestResponse:
     """Test HTTP connectivity to OD daemon."""
     url = req.od_url.rstrip("/")
 
+    # SSRF protection — reject dangerous URLs
+    _validate_url_ssrf(url)
+
     # 1. Check /api/health
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -129,7 +176,12 @@ async def test_connection(req: ConnectionTestRequest) -> ConnectionTestResponse:
         async with httpx.AsyncClient(timeout=10.0) as client:
             ver_resp = await client.get(f"{url}/api/version")
             if ver_resp.status_code == 200:
-                version = ver_resp.json().get("version", version)
+                ver_data = ver_resp.json().get("version", version)
+                # /api/version may return {"version": {"version": "x.y.z", ...}}
+                if isinstance(ver_data, dict):
+                    version = ver_data.get("version", version)
+                else:
+                    version = str(ver_data)
     except Exception:
         pass
 

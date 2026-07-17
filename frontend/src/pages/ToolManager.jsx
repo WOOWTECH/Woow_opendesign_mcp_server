@@ -11,28 +11,26 @@ import {
 } from "lucide-react";
 
 const CATEGORIES = {
-  Core: [
-    "pods_list", "pods_get", "pods_run", "pods_delete", "pods_log",
-    "pods_exec", "pods_top", "pods_list_in_namespace",
-    "resources_list", "resources_get", "resources_create_or_update",
-    "resources_delete", "resources_scale",
-    "namespaces_list", "nodes_top", "nodes_log", "nodes_stats_summary",
-    "events_list", "configuration_view",
+  "A - System": [
+    "health", "version", "list_agents", "list_connectors",
   ],
-  Config: [
-    "pods_run", "resources_create_or_update", "resources_delete",
-    "resources_scale",
+  "B - Project": [
+    "list_projects", "get_project", "create_project",
+    "delete_project", "list_project_files",
   ],
-  Helm: [
-    "helm_install", "helm_list", "helm_uninstall",
+  "C - File": [
+    "read_file", "get_file_info",
+  ],
+  "D - AI Chat": [
+    "send_message", "list_runs",
+  ],
+  "E - Content": [
+    "list_plugins", "list_skills",
   ],
 };
 
 const DANGEROUS_TOOLS = new Set([
-  "pods_delete",
-  "pods_exec",
-  "resources_delete",
-  "helm_uninstall",
+  "delete_project",
 ]);
 
 export default function ToolManager() {

@@ -38,7 +38,7 @@ export default function TokenManager() {
 
   const currentToken = settings?.mcp_auth_token || "";
   const displayToken = newToken || currentToken;
-  const tunnelUrl = health?.tunnel?.url || "https://k8s-mcp.woowtech.io";
+  const tunnelUrl = health?.tunnel?.url || "https://open-design-mcp.woowtech.io";
   const endpointUrl = `${tunnelUrl}/private_${displayToken}/mcp`;
 
   const copyToClipboard = async (text, setCopied) => {

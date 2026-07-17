@@ -116,9 +116,10 @@ async def get_settings() -> FullConfig:
         if "password" in key.lower() or "key" in key.lower() or "secret" in key.lower():
             conn[key] = _mask(str(conn[key])) if conn[key] else ""
 
+    raw_token = cfg.get("mcp_auth_token", "")
     return FullConfig(
         admin_password_masked=_mask(password) if password else "(not set)",
-        mcp_auth_token=cfg.get("mcp_auth_token", ""),
+        mcp_auth_token=_mask(raw_token) if raw_token else "",
         connection=conn,
         mcp_server=cfg.get("mcp_server", {}),
         proxy=cfg.get("proxy", {}),

@@ -140,6 +140,7 @@ async def login(body: _LoginRequest) -> JSONResponse:
         key="mcp-admin-token",
         value=token,
         httponly=True,
+        secure=True,
         samesite="strict",
         max_age=JWT_EXPIRY_HOURS * 3600,
     )

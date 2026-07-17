@@ -7,10 +7,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Sequence
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 from .auth.middleware import AuthMiddleware, login_router
 from .process import get_process_manager
@@ -18,6 +20,39 @@ from .proxy import router as proxy_router
 from .routers.settings import router as settings_router
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Security middleware
+# ---------------------------------------------------------------------------
+
+MAX_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # HSTS — only when behind TLS terminator (Cloudflare)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject request bodies larger than MAX_BODY_SIZE."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_BODY_SIZE:
+            return JSONResponse(
+                {"detail": "Request body too large"},
+                status_code=413,
+            )
+        return await call_next(request)
 
 
 def create_app(
@@ -51,19 +86,29 @@ def create_app(
         # Shutdown: stop MCP server
         await pm.stop()
 
-    app = FastAPI(title=title, lifespan=lifespan)
+    app = FastAPI(title=title, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+    # -- Security headers (outermost — runs last on response) ------------------
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # -- Request size limit ----------------------------------------------------
+    app.add_middleware(RequestSizeLimitMiddleware)
 
     # -- Auth middleware -------------------------------------------------------
     app.add_middleware(AuthMiddleware)
 
     # -- CORS ------------------------------------------------------------------
-    origins = cors_origins if cors_origins is not None else ["*"]
+    origins = cors_origins if cors_origins is not None else [
+        "https://open-design-mcp.woowtech.io",
+        "https://k8s-mcp.woowtech.io",
+        "https://odoo-mcp.woowtech.io",
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept"],
     )
 
     # -- Core routers ----------------------------------------------------------
