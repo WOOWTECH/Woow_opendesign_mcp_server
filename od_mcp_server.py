@@ -112,6 +112,23 @@ def _api_delete(path: str) -> dict:
     return resp.json()
 
 
+def _register_project(project_id: str, prompt: str) -> None:
+    """Register a project in the daemon's SQLite DB.
+
+    The daemon's /api/chat creates the project directory on disk but does NOT
+    insert a row into the projects table. Without registration, the project
+    is invisible to list_projects / get_project.
+    """
+    # Derive a short name from the first line of the prompt (max 80 chars)
+    name = prompt.strip().split("\n")[0][:80] or "Untitled Project"
+    try:
+        _api_post("/api/projects", {"id": project_id, "name": name})
+    except httpx.HTTPStatusError:
+        # Best-effort: if registration fails (e.g. already registered),
+        # the project files still exist and are accessible.
+        pass
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Category A: System Tools (4)
 # ═══════════════════════════════════════════════════════════════════
@@ -196,6 +213,12 @@ def create_project(prompt: str, agent_id: str = "claude") -> dict:
     # start event, but as a safety net we set it here too).
     if not result.get("projectId"):
         result["projectId"] = project_id
+
+    # Register the project in the daemon's SQLite DB so list_projects /
+    # get_project work. The daemon's /api/chat creates the directory but
+    # does NOT insert a row into the projects table.
+    _register_project(project_id, prompt)
+
     return result
 
 
