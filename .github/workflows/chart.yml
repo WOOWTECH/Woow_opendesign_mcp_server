@@ -29,7 +29,10 @@ jobs:
           S="secrets.create=true,secrets.jwtSecret=dummy-jwt,secrets.adminPassword=dummy-pw"
           helm template od-mcp "$CHART" -n open-design -f deploy/local/od-mcp.yaml > /tmp/live.yaml
           helm template od-mcp "$CHART" -n open-design                              > /tmp/default-ns.yaml
-          helm template od-mcp "$CHART"                                             > /tmp/other-ns.yaml
+          helm template od-mcp "$CHART"                                             > /tmp/default-release-ns.yaml
+          # namespace.name != release namespace: the only combination that renders
+          # templates/namespace.yaml (an empty name follows -n and is skipped by design).
+          helm template od-mcp "$CHART" -n open-design --set namespace.name=other-ns > /tmp/other-ns.yaml
           helm template od-mcp "$CHART" -n open-design --set "$S"                   > /tmp/secrets.yaml
           helm template od-mcp "$CHART" -n test --set image.mode=source \
             --set persistence.storageClassName=longhorn-delete                      > /tmp/source.yaml
