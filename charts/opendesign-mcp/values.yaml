@@ -1,0 +1,173 @@
+# Default values for the opendesign-mcp chart.
+#
+# The defaults reproduce the object that is running today (local cluster,
+# namespace open-design, Deployment/Service od-mcp) field for field, so
+# `helm template` with deploy/local/od-mcp.yaml renders exactly the live spec
+# and a later takeover restarts nothing. Anything that would CHANGE the live
+# pod template is opt-in and off by default - see "hardening" below.
+
+namespace:
+  # Render a Namespace object. A namespace equal to the release namespace (-n)
+  # is never rendered: Helm keeps its release record there, so it is created
+  # with --create-namespace instead and `helm uninstall` can never delete it.
+  create: true
+  name: open-design
+
+# Add `helm.sh/resource-policy: keep` to the Namespace, the PVC and any
+# chart-created Secret, so `helm uninstall` never deletes /data/config.json
+# (admin password, MCP token, token history) or the credentials.
+keepOnUninstall: true
+
+# Object names. The default reproduces the live names:
+#   Deployment/Service selector label  app: od-mcp
+#   Deployment  od-mcp        Service  od-mcp-svc
+#   PVC         od-mcp-data   Secret   od-mcp-secrets
+#   NetworkPolicy od-mcp-policy
+# Changing it changes the pod-template label and therefore restarts the pod.
+fullnameOverride: od-mcp
+
+# Extra label carried by every object, exactly as the live objects have it.
+partOf: open-design
+
+image:
+  # mode: prebuilt | source
+  #   prebuilt - run a pre-built image (the Dockerfile in this repo). This is
+  #              what runs live: `podman build -t od-mcp:latest .` on the node
+  #              and imagePullPolicy Never, so nothing has to be published.
+  #   source   - clone this repo and install the dependencies on start, the
+  #              same runtime model the other WOOWTECH MCP charts use. Use it
+  #              on clusters where the local image does not exist (and for
+  #              chart tests). It does NOT change the prebuilt pod template.
+  mode: prebuilt
+  repository: localhost/od-mcp
+  tag: latest
+  pullPolicy: Never
+
+# Only read when image.mode=source.
+source:
+  gitRepo: https://github.com/WOOWTECH/Woow_opendesign_mcp_server
+  gitRef: ""
+  images:
+    # Needs python AND node in one container: entrypoint.sh runs uvicorn and
+    # supergateway side by side and exits as soon as either one dies.
+    runtime: nikolaik/python-nodejs:python3.12-nodejs22-slim
+    git: alpine/git:latest
+  # Pinning these keeps a rebuild reproducible; "" installs the latest.
+  supergatewayVersion: ""
+
+replicas: 1
+
+# Upstream Open Design daemon the 15 MCP tools call.
+od:
+  apiBase: http://open-design-svc:7457
+
+ports:
+  admin: 8080
+  mcp: 8000
+
+# CONFIG_DIR and NAMESPACE are injected because the live Deployment injects
+# them. Neither is read by the application (the config path comes from
+# MCP_ADMIN_CONFIG, and od_mcp_admin/routers/health.py hardcodes the
+# namespace); they are kept only so the rendered pod template equals live.
+env:
+  configDir: /data
+  # "" = .Values.namespace.name
+  namespace: ""
+# Extra environment variables, name -> value.
+extraEnv: {}
+
+secrets:
+  # false (default): Secret od-mcp-secrets already exists and the chart never
+  #   renders it, so `helm upgrade` can never overwrite a rotated JWT_SECRET.
+  #   Create it out of band from examples/secrets.example.yaml.
+  # true: render it from the values below (fresh installs and chart tests).
+  create: false
+  # Signs the admin console's JWTs. 32+ random bytes, e.g. `openssl rand -hex 32`.
+  jwtSecret: ""
+  # Injected as ADMIN_PASSWORD. NOTE: the application does not read it - the
+  # login password lives in /data/config.json and defaults to "admin" on the
+  # first boot. Change it in the console's Settings page after installing.
+  adminPassword: ""
+  # Name of the Secret holding JWT_SECRET and ADMIN_PASSWORD. "" = <fullname>-secrets.
+  existingSecret: ""
+
+persistence:
+  enabled: true
+  # /data/config.json: admin password, MCP token and rotation history.
+  size: 100Mi
+  accessModes:
+    - ReadWriteOnce
+  # local cluster: local-path. woow-k3s: longhorn-delete (tests) / longhorn.
+  storageClassName: local-path
+  # Adopt an existing PVC instead of rendering one.
+  existingClaim: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 3Gi
+
+# Probes, exactly as the live Deployment has them. All three hit the admin
+# port; supergateway's own /healthz on :8000 is not probed (see follow-ups).
+probes:
+  startup:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 12
+  readiness:
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 30
+    failureThreshold: 3
+
+# Pinned to the only Ready node of the local cluster live; see deploy/local.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra pod-template annotations. The live pod template carries the
+# kubectl.kubernetes.io/restartedAt stamp of its last manual restart; it is
+# part of the pod-template hash, so deploy/local/od-mcp.yaml keeps it.
+podAnnotations: {}
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+# Deployment strategy. Live sets none, so the API server's RollingUpdate
+# default applies; "" keeps it that way. Set to Recreate only if you accept
+# the restart (the data PVC is ReadWriteOnce, so a rolling update can wedge
+# on a multi-node cluster).
+strategy: ""
+
+networkPolicy:
+  enabled: true
+  # true = live: ingress from every namespace and every pod to 8080/8000.
+  # false = only the namespaces/pods listed below may reach the ports.
+  # Turning it off CHANGES live behaviour - it is a follow-up, not phase 1.
+  allowFromAllNamespaces: true
+  allowedNamespaceLabels: {}
+  allowedPodLabels: {}
+  # Extra ingress rule built from raw CIDRs, appended to whatever the two
+  # settings above produce. Empty by default so the rendered policy equals
+  # live. Needed on clusters whose NetworkPolicy implementation does not match
+  # pod/namespace selectors for Service traffic - woow-k3s is one: there the
+  # live-shaped policy rejects every connection until an ipBlock rule is added.
+  allowFromCidrs: []
+
+# Hardening. Every switch here would change the live pod template, so all of
+# them are off by default and listed as follow-ups in the README.
+hardening:
+  # Run as an unprivileged user. The image has no USER and writes to /data.
+  podSecurityContext: {}
+  containerSecurityContext: {}
+
+tests:
+  # `helm test` smoke pod: admin /healthz and supergateway /healthz. Read-only.
+  enabled: true
+  # "" = the workload image.
+  image: ""

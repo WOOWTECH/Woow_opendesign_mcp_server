@@ -237,15 +237,28 @@ docker run -d \
   od-mcp-server:latest
 ```
 
-### Kubernetes (K3s)
+### Kubernetes (K3s) — Helm
+
+The chart lives in [`charts/opendesign-mcp/`](charts/opendesign-mcp/); its
+README covers values, verification, uninstall and taking over the instance that
+is already running. There is no `k8s-manifests/` directory - the manifests this
+README used to point at were never in this repo.
 
 ```bash
-# Apply manifests
-kubectl apply -f k8s-manifests/
+# 1. Credentials first: the chart only REFERENCES the Secret by default.
+#    Copy the example OUTSIDE the repo, fill it in, then apply your copy.
+cp charts/opendesign-mcp/examples/secrets.example.yaml /secure/path/od-mcp-secrets.yaml
+$EDITOR /secure/path/od-mcp-secrets.yaml
+kubectl -n open-design apply -f /secure/path/od-mcp-secrets.yaml
+
+# 2. Install (the image is built on the node: podman build -t od-mcp:latest .)
+helm -n open-design upgrade --install od-mcp ./charts/opendesign-mcp \
+  -f deploy/local/od-mcp.yaml
 
 # Verify
-kubectl get pods -n open-design
-kubectl logs -n open-design deployment/od-mcp -c admin-gui
+kubectl -n open-design rollout status deploy/od-mcp
+helm -n open-design test od-mcp --logs
+kubectl logs -n open-design deployment/od-mcp -c od-mcp
 ```
 
 ### MCP Client Configuration
@@ -321,7 +334,9 @@ Connect any MCP client using the StreamableHttp endpoint:
 │   │   ├── pages/            # Dashboard, Tools, Tokens, Logs, Settings
 │   │   └── components/       # Shared UI components
 │   └── package.json
-├── k8s-manifests/            # Kubernetes deployment manifests
+├── charts/opendesign-mcp/    # Helm chart (see its own README)
+├── deploy/local/od-mcp.yaml  # Instance values for the running release (no secrets)
+├── scripts/check-drift.sh    # Chart vs. cluster drift check
 ├── Dockerfile                # Multi-stage build (Node 22 + Python 3.12)
 ├── entrypoint.sh             # Container startup script
 └── pyproject.toml            # Python project configuration

@@ -1,0 +1,20 @@
+{{- /*
+Namespace. One that equals the release namespace is skipped on purpose: Helm
+stores its release record there, so it must be created with --create-namespace
+and can then never be removed by `helm uninstall`.
+
+Live has no Namespace of its own (00-namespace.yaml in the archived sibling
+created it), so the instance values install with -n open-design and this
+template renders nothing for it.
+*/ -}}
+{{- include "odmcp.validate" . -}}
+{{- if and .Values.namespace.create (ne .Values.namespace.name .Release.Namespace) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ include "odmcp.fullname" . }}
+    app.kubernetes.io/part-of: {{ .Values.partOf }}
+  {{- include "odmcp.keepAnnotations" . | nindent 2 }}
+{{- end }}

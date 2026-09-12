@@ -1,0 +1,118 @@
+name: chart
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+env:
+  CHART: charts/opendesign-mcp
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.19.5
+
+      - name: helm lint
+        run: |
+          helm lint "$CHART"
+          helm lint "$CHART" -f deploy/local/od-mcp.yaml
+
+      - name: helm template (every values combination)
+        run: |
+          S="secrets.create=true,secrets.jwtSecret=dummy-jwt,secrets.adminPassword=dummy-pw"
+          helm template od-mcp "$CHART" -n open-design -f deploy/local/od-mcp.yaml > /tmp/live.yaml
+          helm template od-mcp "$CHART" -n open-design                              > /tmp/default-ns.yaml
+          helm template od-mcp "$CHART"                                             > /tmp/other-ns.yaml
+          helm template od-mcp "$CHART" -n open-design --set "$S"                   > /tmp/secrets.yaml
+          helm template od-mcp "$CHART" -n test --set image.mode=source \
+            --set persistence.storageClassName=longhorn-delete                      > /tmp/source.yaml
+          helm template od-mcp "$CHART" -n open-design \
+            --set persistence.enabled=false,networkPolicy.enabled=false,tests.enabled=false,keepOnUninstall=false \
+                                                                                    > /tmp/minimal.yaml
+          helm template od-mcp "$CHART" -n open-design \
+            --set networkPolicy.allowFromAllNamespaces=false \
+            --set networkPolicy.allowedNamespaceLabels.kubernetes\\.io/metadata\\.name=open-design \
+            --set hardening.podSecurityContext.runAsNonRoot=true \
+            --set hardening.containerSecurityContext.allowPrivilegeEscalation=false \
+            --set strategy=Recreate                                                 > /tmp/hardened.yaml
+
+      - name: kubeconform (schema validation)
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -strict -summary \
+            /tmp/live.yaml /tmp/default-ns.yaml /tmp/other-ns.yaml /tmp/secrets.yaml \
+            /tmp/source.yaml /tmp/minimal.yaml /tmp/hardened.yaml
+
+      - name: Required values are enforced
+        run: |
+          if helm template od-mcp "$CHART" -n open-design --set secrets.create=true >/dev/null 2>&1; then
+            echo "secrets.create=true rendered without any secret values"; exit 1
+          fi
+          if helm template od-mcp "$CHART" -n open-design \
+               --set secrets.create=true,secrets.jwtSecret=x >/dev/null 2>&1; then
+            echo "secrets.create=true rendered without secrets.adminPassword"; exit 1
+          fi
+          if helm template od-mcp "$CHART" -n open-design --set image.mode=bogus >/dev/null 2>&1; then
+            echo "an unknown image.mode rendered instead of failing"; exit 1
+          fi
+          echo "required() / fail guards fire"
+          # The Secret must actually render; catches templates/secrets.yaml
+          # being swallowed by .gitignore.
+          n=$(grep -c '^kind: Secret$' /tmp/secrets.yaml || true)
+          [ "$n" -eq 1 ] || { echo "expected 1 Secret with secrets.create=true, got $n"; exit 1; }
+          # Every template must contribute to at least one render.
+          for t in "$CHART"/templates/*.yaml "$CHART"/templates/tests/*.yaml; do
+            b=$(basename "$t")
+            grep -qh "templates/.*$b" /tmp/*.yaml \
+              || { echo "template $b never rendered in any combination"; exit 1; }
+          done
+          echo "every template renders"
+
+      - name: No secrets committed
+        run: |
+          pip install --quiet pyyaml
+          python3 - <<'PY'
+          import glob, pathlib, sys, yaml
+          bad = []
+          v = yaml.safe_load(open("charts/opendesign-mcp/values.yaml"))
+          for k, val in v["secrets"].items():
+              if k != "create" and val:
+                  bad.append(f"values.yaml secrets.{k} must be empty")
+          for d in yaml.safe_load_all(open("/tmp/live.yaml")):
+              if d and d["kind"] == "Secret":
+                  bad.append("the live render must contain no Secret (secrets.create=false)")
+          for d in yaml.safe_load_all(open("charts/opendesign-mcp/examples/secrets.example.yaml")):
+              for k, val in ((d or {}).get("stringData") or {}).items():
+                  if "REPLACE_ME" not in str(val):
+                      bad.append(f"examples: {d['metadata']['name']}.{k} is not a placeholder")
+          # No instance values file may carry secret material.
+          for f in glob.glob("deploy/**/*.yaml", recursive=True):
+              d = yaml.safe_load(open(f)) or {}
+              s = d.get("secrets") or {}
+              if s.get("create") or s.get("jwtSecret") or s.get("adminPassword"):
+                  bad.append(f"{f} must not carry secret material")
+          # No 32+ char hex/base64 blob anywhere in the chart, deploy/ or the docs.
+          import re
+          blob = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Fa-f0-9]{32,}(?![A-Za-z0-9+/=_-])")
+          for f in (glob.glob("charts/**/*", recursive=True)
+                    + glob.glob("deploy/**/*", recursive=True)
+                    + ["README.md", "README_zh-TW.md"]):
+              p = pathlib.Path(f)
+              if not p.is_file():
+                  continue
+              for i, line in enumerate(p.read_text(errors="ignore").splitlines(), 1):
+                  if blob.search(line):
+                      bad.append(f"{f}:{i} looks like a committed secret/hash")
+          sys.exit("\n".join(bad)) if bad else print("no secrets committed")
+          PY
+
+      - name: Shell scripts parse
+        run: bash -n scripts/*.sh entrypoint.sh

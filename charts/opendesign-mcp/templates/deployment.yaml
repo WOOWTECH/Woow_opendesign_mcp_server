@@ -1,0 +1,188 @@
+{{- /*
+od-mcp: one container running entrypoint.sh, which starts supergateway
+(stdio -> StreamableHttp, :8000) and uvicorn (admin console, :8080) side by
+side and exits as soon as either one dies, so K8s restarts the container.
+
+In prebuilt mode (the default, and what runs live) the pod template below is
+byte-for-byte the live spec: same labels, env order, probes, resources and
+volume. Nothing here may gain a field by default - every addition changes the
+pod-template hash and would roll the pod on takeover.
+*/ -}}
+{{- include "odmcp.validate" . -}}
+{{- $name := include "odmcp.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    {{- include "odmcp.labels" . | nindent 4 }}
+  name: {{ $name }}
+  namespace: {{ include "odmcp.ns" . }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "odmcp.selectorLabels" . | nindent 6 }}
+  {{- with .Values.strategy }}
+  strategy:
+    type: {{ . }}
+    {{- if eq . "Recreate" }}
+    rollingUpdate: null
+    {{- end }}
+  {{- end }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "odmcp.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - env:
+        - name: OD_API_BASE
+          value: {{ .Values.od.apiBase | quote }}
+        - name: MCP_SERVER_PORT
+          value: {{ .Values.ports.mcp | quote }}
+        - name: ADMIN_PORT
+          value: {{ .Values.ports.admin | quote }}
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: JWT_SECRET
+              name: {{ include "odmcp.secretName" . }}
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: ADMIN_PASSWORD
+              name: {{ include "odmcp.secretName" . }}
+        - name: CONFIG_DIR
+          value: {{ .Values.env.configDir | quote }}
+        - name: NAMESPACE
+          value: {{ include "odmcp.namespaceEnv" . | quote }}
+        {{- range $k, $v := .Values.extraEnv }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        {{- if eq .Values.image.mode "source" }}
+        # The Dockerfile sets this; in source mode the code lives in /app too
+        # (a symlink to the cloned /repo), so uvicorn and od_mcp_server.py
+        # resolve their imports the same way.
+        - name: PYTHONPATH
+          value: /app
+        {{- end }}
+        image: {{ include "odmcp.image" . }}
+        imagePullPolicy: {{ include "odmcp.imagePullPolicy" . }}
+        {{- if eq .Values.image.mode "source" }}
+        command: [bash, -c]
+        args:
+          - |
+            set -eux
+            # entrypoint.sh and the Dockerfile both hardcode /app, and the
+            # runtime image ships an empty /app as its WORKDIR - replace it
+            # with a symlink to the clone (`ln -sfn` alone would create
+            # /app/repo instead).
+            rm -rf /app
+            ln -sfn /repo /app
+            cd /app
+            # Install the dependency list from pyproject.toml, exactly like
+            # the Dockerfile does - NOT `pip install .`: the project has no
+            # build-system table and a flat layout with several top-level
+            # directories, so a PEP 517 build cannot discover its packages.
+            python -c 'import tomllib,sys; sys.stdout.write("\n".join(tomllib.load(open("/app/pyproject.toml","rb"))["project"]["dependencies"])+"\n")' > /tmp/requirements.txt
+            cat /tmp/requirements.txt
+            pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
+              || pip install --no-cache-dir -r /tmp/requirements.txt
+            npm install -g --no-audit --no-fund \
+              supergateway{{ with .Values.source.supergatewayVersion }}@{{ . }}{{ end }}
+            # frontend/dist is committed, so the SPA needs no build step here.
+            if [ -d /app/frontend/dist ]; then
+              mkdir -p /app/static && cp -r /app/frontend/dist/. /app/static/
+            fi
+            # Invoked through bash on purpose: entrypoint.sh is mode 100644
+            # in git and only the Dockerfile chmods it.
+            exec bash /app/entrypoint.sh
+        workingDir: /app
+        {{- end }}
+        livenessProbe:
+          failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          httpGet:
+            path: /healthz
+            port: {{ .Values.ports.admin }}
+          periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+        name: {{ $name }}
+        ports:
+        - containerPort: {{ .Values.ports.admin }}
+          name: admin
+        - containerPort: {{ .Values.ports.mcp }}
+          name: mcp
+        readinessProbe:
+          failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          httpGet:
+            path: /healthz
+            port: {{ .Values.ports.admin }}
+          periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        {{- with .Values.hardening.containerSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        startupProbe:
+          failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          httpGet:
+            path: /healthz
+            port: {{ .Values.ports.admin }}
+          initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+        volumeMounts:
+        - mountPath: /data
+          name: data
+        {{- if eq .Values.image.mode "source" }}
+        - mountPath: /repo
+          name: repo
+        {{- end }}
+      {{- if eq .Values.image.mode "source" }}
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - |
+          set -eux
+          rm -rf /repo/* /repo/.git || true
+          git clone --depth 1 {{ with .Values.source.gitRef }}--branch {{ . }} {{ end }}{{ .Values.source.gitRepo }} /repo
+        image: {{ .Values.source.images.git }}
+        imagePullPolicy: IfNotPresent
+        name: git-clone
+        volumeMounts:
+        - mountPath: /repo
+          name: repo
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hardening.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: data
+        {{- if .Values.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "odmcp.pvcName" . }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- if eq .Values.image.mode "source" }}
+      - name: repo
+        emptyDir: {}
+      {{- end }}

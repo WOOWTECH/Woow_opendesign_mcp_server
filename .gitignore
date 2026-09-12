@@ -2,6 +2,24 @@ vibe-kanban-mcp
 __pycache__/
 *.pyc
 .env
+.env.*
+*.env
 node_modules/
 frontend/node_modules/
-__pycache__/
+
+# Real secrets must never be committed - only
+# charts/opendesign-mcp/examples/secrets.example.yaml.
+# Every pattern is anchored to the repo root (leading "/") on purpose: an
+# unanchored "secrets.yaml" would also match
+# charts/opendesign-mcp/templates/secrets.yaml and silently keep the chart's
+# own Secret template out of git.
+/secrets.yaml
+/*-secrets.yaml
+/*.secret.yaml
+/*secrets.values.yaml
+/*.local.yaml
+!/charts/opendesign-mcp/templates/secrets.yaml
+!/charts/opendesign-mcp/examples/secrets.example.yaml
+
+# Packaged charts
+*.tgz
