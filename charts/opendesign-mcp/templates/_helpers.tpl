@@ -12,8 +12,14 @@ instance its own fullnameOverride.
 {{- default "od-mcp" .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- /*
+Object placement. `namespace.name` is EMPTY by default so placement follows
+`-n`/`--namespace`. Setting it wins over `-n`, so a `-n <test-ns> -f <real
+instance values>` rehearsal would write to the REAL namespace. Never set it
+in a committed instance values file.
+*/ -}}
 {{- define "odmcp.ns" -}}
-{{ .Values.namespace.name }}
+{{ .Values.namespace.name | default .Release.Namespace }}
 {{- end -}}
 
 {{/* Selector / pod-template label. Changing it re-creates the ReplicaSet. */}}
@@ -44,7 +50,7 @@ annotations:
 {{- end -}}
 
 {{- define "odmcp.namespaceEnv" -}}
-{{- default .Values.namespace.name .Values.env.namespace -}}
+{{- default (include "odmcp.ns" .) .Values.env.namespace -}}
 {{- end -}}
 
 {{/* Image reference for the workload container. */}}

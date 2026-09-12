@@ -8,11 +8,11 @@ created it), so the instance values install with -n open-design and this
 template renders nothing for it.
 */ -}}
 {{- include "odmcp.validate" . -}}
-{{- if and .Values.namespace.create (ne .Values.namespace.name .Release.Namespace) }}
+{{- if and .Values.namespace.create (ne (include "odmcp.ns" .) .Release.Namespace) }}
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace.name }}
+  name: {{ include "odmcp.ns" . }}
   labels:
     app.kubernetes.io/name: {{ include "odmcp.fullname" . }}
     app.kubernetes.io/part-of: {{ .Values.partOf }}

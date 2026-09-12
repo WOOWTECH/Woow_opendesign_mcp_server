@@ -11,7 +11,7 @@ namespace:
   # is never rendered: Helm keeps its release record there, so it is created
   # with --create-namespace instead and `helm uninstall` can never delete it.
   create: true
-  name: open-design
+  name: ""
 
 # Add `helm.sh/resource-policy: keep` to the Namespace, the PVC and any
 # chart-created Secret, so `helm uninstall` never deletes /data/config.json
