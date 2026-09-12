@@ -1,0 +1,23 @@
+apiVersion: v2
+name: opendesign-mcp
+description: >-
+  Open Design MCP server and Admin console: FastMCP (15 tools, stdio) bridged to
+  StreamableHttp by supergateway on :8000, plus the FastAPI/React admin GUI and
+  /private_{token} reverse proxy on :8080, in front of an Open Design daemon.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - mcp
+  - open-design
+  - opendesign
+  - supergateway
+  - fastmcp
+home: https://github.com/WOOWTECH/Woow_opendesign_mcp_server
+sources:
+  - https://github.com/WOOWTECH/Woow_opendesign_mcp_server
+  - https://github.com/WOOWTECH/Woow_k3s_opendesign
+maintainers:
+  - name: WoowTech
+    url: https://github.com/WOOWTECH

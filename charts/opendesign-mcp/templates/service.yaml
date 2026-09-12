@@ -1,0 +1,28 @@
+{{- /*
+ClusterIP Service. Both ports are published because the live Service does:
+admin 8080 (JWT + /private_{token} proxy) and mcp 8000 (supergateway, which
+has NO authentication of its own - see the README follow-ups).
+*/ -}}
+{{- $name := include "odmcp.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "odmcp.labels" . | nindent 4 }}
+  name: {{ $name }}-svc
+  namespace: {{ include "odmcp.ns" . }}
+spec:
+  ports:
+  - name: admin
+    port: {{ .Values.ports.admin }}
+    targetPort: {{ .Values.ports.admin }}
+  - name: mcp
+    port: {{ .Values.ports.mcp }}
+    targetPort: {{ .Values.ports.mcp }}
+  selector:
+    {{- include "odmcp.selectorLabels" . | nindent 4 }}
+  type: {{ .Values.service.type }}

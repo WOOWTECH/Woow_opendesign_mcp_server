@@ -237,15 +237,28 @@ docker run -d \
   od-mcp-server:latest
 ```
 
-### Kubernetes (K3s)
+### Kubernetes (K3s) — Helm
+
+Chart 放在 [`charts/opendesign-mcp/`](charts/opendesign-mcp/)，該目錄的 README
+說明所有 values、驗證方式、解除安裝，以及如何接管目前已經在跑的那一份。這個
+repo 沒有 `k8s-manifests/` 目錄 — 舊版 README 指向的那些 manifest 從來就不在
+本 repo 裡。
 
 ```bash
-# 套用 manifests
-kubectl apply -f k8s-manifests/
+# 1. 先準備憑證：預設 chart 只「引用」Secret，不會自己建立。
+#    把範例複製到 repo 外面填好，再套用你的副本。
+cp charts/opendesign-mcp/examples/secrets.example.yaml /secure/path/od-mcp-secrets.yaml
+$EDITOR /secure/path/od-mcp-secrets.yaml
+kubectl -n open-design apply -f /secure/path/od-mcp-secrets.yaml
+
+# 2. 安裝（image 在節點上自行建置：podman build -t od-mcp:latest .）
+helm -n open-design upgrade --install od-mcp ./charts/opendesign-mcp \
+  -f deploy/local/od-mcp.yaml
 
 # 驗證
-kubectl get pods -n open-design
-kubectl logs -n open-design deployment/od-mcp -c admin-gui
+kubectl -n open-design rollout status deploy/od-mcp
+helm -n open-design test od-mcp --logs
+kubectl logs -n open-design deployment/od-mcp -c od-mcp
 ```
 
 ### MCP 客戶端設定
@@ -321,7 +334,9 @@ kubectl logs -n open-design deployment/od-mcp -c admin-gui
 │   │   ├── pages/            # 儀表板、工具、令牌、日誌、設定
 │   │   └── components/       # 共用 UI 元件
 │   └── package.json
-├── k8s-manifests/            # Kubernetes 部署 manifests
+├── charts/opendesign-mcp/    # Helm chart（另有專屬 README）
+├── deploy/local/od-mcp.yaml  # 線上 release 的 instance values（不含機密）
+├── scripts/check-drift.sh    # chart 與叢集的漂移檢查
 ├── Dockerfile                # 多階段建置（Node 22 + Python 3.12）
 ├── entrypoint.sh             # 容器啟動腳本
 └── pyproject.toml            # Python 專案配置

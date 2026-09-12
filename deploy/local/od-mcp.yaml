@@ -1,0 +1,54 @@
+# Instance values for the od-mcp release that is running TODAY on the local
+# cluster (kubectl --context default), namespace open-design.
+#
+#   helm --kube-context default -n open-design \
+#     upgrade --install od-mcp ./charts/opendesign-mcp \
+#     -f deploy/local/od-mcp.yaml
+#
+# Rendering with this file reproduces the live Deployment/Service field for
+# field, so adopting the objects with --take-ownership restarts nothing.
+# NO SECRET MATERIAL HERE: JWT_SECRET and ADMIN_PASSWORD stay in the cluster
+# Secret open-design/od-mcp-secrets (see charts/opendesign-mcp/examples).
+
+namespace:
+  # The namespace already exists and equals the release namespace, so nothing
+  # is rendered for it either way.
+  create: true
+  name: open-design
+
+secrets:
+  # The live Secret od-mcp-secrets already exists; never let an upgrade
+  # overwrite it.
+  create: false
+
+image:
+  # Built on the node itself: `podman build -t od-mcp:latest .` in this repo.
+  # Nothing is published, hence pullPolicy Never.
+  mode: prebuilt
+  repository: localhost/od-mcp
+  tag: latest
+  pullPolicy: Never
+
+persistence:
+  enabled: true
+  size: 100Mi
+  # nfs-data is broken on this cluster and is also marked default, so this
+  # must stay explicit.
+  storageClassName: local-path
+
+# The image only exists on this node, the PVC is local-path, and it is the
+# only Ready node of the local cluster.
+nodeSelector:
+  kubernetes.io/hostname: woowtechcluster1-aorus-15p-xd
+
+# Part of the live pod template, therefore part of its hash: dropping it would
+# roll the pod on takeover. It is the stamp of the last manual
+# `kubectl rollout restart`.
+podAnnotations:
+  kubectl.kubernetes.io/restartedAt: "2026-07-18T21:40:01+08:00"
+
+networkPolicy:
+  enabled: true
+  # Live behaviour: every namespace and pod may reach 8080 and 8000.
+  # Tightening this is a follow-up (it changes live traffic).
+  allowFromAllNamespaces: true

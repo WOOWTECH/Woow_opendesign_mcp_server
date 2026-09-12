@@ -1,0 +1,42 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed as release {{ .Release.Name }} in namespace {{ include "odmcp.ns" . }}.
+
+Objects
+  Deployment     {{ include "odmcp.fullname" . }}          ({{ include "odmcp.image" . }}, mode={{ .Values.image.mode }})
+  Service        {{ include "odmcp.fullname" . }}-svc      admin {{ .Values.ports.admin }} / mcp {{ .Values.ports.mcp }} (ClusterIP)
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  PVC            {{ include "odmcp.fullname" . }}-data     {{ .Values.persistence.size }} {{ .Values.persistence.storageClassName }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+  NetworkPolicy  {{ include "odmcp.fullname" . }}-policy
+{{- end }}
+{{- if .Values.secrets.create }}
+  Secret         {{ include "odmcp.secretName" . }}  (rendered by this chart)
+{{- else }}
+  Secret         {{ include "odmcp.secretName" . }}  (must already exist - see examples/secrets.example.yaml)
+{{- end }}
+
+Verify
+  kubectl -n {{ include "odmcp.ns" . }} rollout status deploy/{{ include "odmcp.fullname" . }}
+  kubectl -n {{ include "odmcp.ns" . }} port-forward svc/{{ include "odmcp.fullname" . }}-svc {{ .Values.ports.admin }}:{{ .Values.ports.admin }}
+  curl -s localhost:{{ .Values.ports.admin }}/healthz
+{{- if .Values.tests.enabled }}
+  helm test {{ .Release.Name }} -n {{ include "odmcp.ns" . }} --logs
+{{- end }}
+
+Uninstall keeps data
+{{- if .Values.keepOnUninstall }}
+  keepOnUninstall=true: the PVC{{ if .Values.namespace.create }}, the Namespace{{ end }}{{ if .Values.secrets.create }} and the Secret{{ end }} carry
+  helm.sh/resource-policy: keep, so `helm uninstall {{ .Release.Name }}` leaves /data/config.json
+  (admin password, MCP token, rotation history) in place.
+{{- else }}
+  keepOnUninstall=false: `helm uninstall` WILL delete the PVC and /data/config.json.
+{{- end }}
+
+First login
+  The password is NOT taken from the Secret. On its first boot the console
+  writes admin_password "admin" into /data/config.json; change it in Settings.
+{{- if not .Values.secrets.create }}
+
+  This release expects Secret {{ include "odmcp.secretName" . }} to hold JWT_SECRET and
+  ADMIN_PASSWORD already. Create it out of band, never from values in git.
+{{- end }}
