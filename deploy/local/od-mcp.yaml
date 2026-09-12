@@ -10,12 +10,8 @@
 # NO SECRET MATERIAL HERE: JWT_SECRET and ADMIN_PASSWORD stay in the cluster
 # Secret open-design/od-mcp-secrets (see charts/opendesign-mcp/examples).
 
-namespace:
-  # The namespace already exists and equals the release namespace, so nothing
-  # is rendered for it either way.
-  create: true
-  name: open-design
-
+# SAFETY: do NOT set `namespace:` here. Placement is controlled entirely by
+# `-n`/`--namespace`; a values-file namespace silently wins over `-n`.
 secrets:
   # The live Secret od-mcp-secrets already exists; never let an upgrade
   # overwrite it.
